@@ -1,0 +1,18 @@
+﻿.dot:before {
+    content: ' \25CF';
+    font-size: 1.2em;
+    margin-left: 0.5em;
+    margin-right: 0.2em;
+}
+
+.existing {
+    color: green;
+}
+
+.available {
+    color: orange;
+}
+
+.missing {
+    color: red;
+}

@@ -1,0 +1,274 @@
+﻿@using SerienfansPlexSync.Client.Services
+@using SerienfansPlexSync.Shared.Models
+@using SerienfansPlexSync.Shared.Services
+@using System.Reactive.Linq
+@using System.Text
+@inject IPlexService PlexService
+@inject ITvShowService TvShowService
+@inject ISerienfansService SerienfansService
+@inject IFilterStateService FilterStateService
+@implements ICompletenessInfo
+
+<MatExpansionPanel>
+    <MatExpansionPanelSummary>
+        <MatExpansionPanelHeader>  
+            <span class="@GetCompletenessStatus(this)">
+                <span class="dot"></span>
+                @PlexTvShow!.Name
+            </span>
+            </MatExpansionPanelHeader>
+        <MatExpansionPanelSubHeader>
+            <span>
+                <CompletenessDisplay CompletenessInfo="this"></CompletenessDisplay>
+                @if (_loading)
+                {
+                    <span> (loading ...)</span>
+                }
+                @(_unknownSeries ? " (unknown series)" : string.Empty)
+            </span>
+        </MatExpansionPanelSubHeader>
+    </MatExpansionPanelSummary>
+    <MatExpansionPanelDetails>
+        <MatAccordion Multi="true">
+        @foreach (var season in _seasons.Where(s => s.Enabled))
+        {
+            <MatExpansionPanel>
+                <MatExpansionPanelSummary>
+                    <MatExpansionPanelHeader>
+                        <span class="@GetCompletenessStatus(season)">
+                            <span class="dot"></span>
+                            Season @season.SeasonNumber
+                            
+                            @if (!string.IsNullOrEmpty(season.Link))
+                            {
+                                <a target="_blank" rel="noopener noreferrer"  href="@season.Link">Download</a>
+                            }
+                        </span>
+                    </MatExpansionPanelHeader>
+                    <MatExpansionPanelSubHeader>
+                            <CompletenessDisplay CompletenessInfo="season"></CompletenessDisplay>
+                    </MatExpansionPanelSubHeader>
+                </MatExpansionPanelSummary>
+                <MatExpansionPanelDetails>
+                    @foreach (var episode in season.Episodes)
+                    {
+                        <h5 class="@GetCompletenessStatus(episode)">@episode.EpisodeNumber. @episode.Title</h5>
+                        @if (!string.IsNullOrEmpty(episode.Link))
+                        {
+                            <a target="_blank" rel="noopener noreferrer"  href="@episode.Link">Download</a>
+                        }
+                    }
+                </MatExpansionPanelDetails>
+            </MatExpansionPanel>
+        }
+        </MatAccordion>
+    </MatExpansionPanelDetails>
+</MatExpansionPanel>
+
+
+
+
+@code {
+#nullable enable
+
+    private bool _loading = true;
+    private bool _unknownSeries = false;
+    private TvShow _tvShow = TvShow.Unknown;
+    private IReadOnlyCollection<SeasonViewModel> _seasons = Array.Empty<SeasonViewModel>();
+
+    [Parameter]
+    public PlexTvShow? PlexTvShow { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Load Tv Shows
+        var tvShow = await TvShowService.GetTvShowAsync(PlexTvShow!.Name, PlexTvShow.Year);
+
+        if (tvShow is null)
+        {
+            _loading = false;
+            return;
+        }
+
+        _tvShow = tvShow;
+        _seasons = tvShow.Seasons.Select(x => new SeasonViewModel(x)).ToList();
+
+        StateHasChanged();
+
+        var nonNullSelectedHoster = FilterStateService.SelectedHoster.Where(h => h != null).Select(h => h!);
+        var nonNullSelectedServer = FilterStateService.SelectedServer.Where(s => s != null).Select(s => s!);
+
+        nonNullSelectedServer.Select(server => Observable.FromAsync(async () =>
+        {
+            // Load availability from plex server
+            await UpdateModelWithPlexServer(server);
+            return server;
+        })).Concat()
+        .CombineLatest(FilterStateService.SelectedLanguage, FilterStateService.SelectedQuality, nonNullSelectedHoster, FilterStateService.SearchOldSeasons).Subscribe(async filter =>
+        {
+            var (_, language, quality, hoster, searchOldSeasons) = filter;
+
+            await LoadSeasonsAsync(language, quality, hoster, searchOldSeasons);
+        });
+    }
+
+    private async Task UpdateModelWithPlexServer(PlexServer server)
+    {
+        _loading = true;
+
+        var plexSeasons = await PlexService.GetSeasonsAsync(PlexTvShow!, server);
+
+        foreach (var plexSeason in plexSeasons)
+        {
+            var season = _seasons.SingleOrDefault(s => s.SeasonNumber == plexSeason.SeasonNumber);
+
+            if (season is null)
+                continue;
+
+            season.AvailableInPlex = true;
+
+            foreach (var plexEpisode in plexSeason.Episodes)
+            {
+                var episode = season.Episodes.SingleOrDefault(e => e.EpisodeNumber == plexEpisode.EpisodeNumber);
+
+                if (episode is null)
+                    continue;
+
+                episode.AvailableInPlex = true;
+            }
+        }
+
+        var earliestSeason = _seasons.First(s => s.AvailableInPlex).SeasonNumber;
+        foreach (var season in _seasons)
+            season.Enabled = season.SeasonNumber >= earliestSeason;
+
+        _loading = false;
+
+        StateHasChanged();
+    }
+
+    private async Task LoadSeasonsAsync(Language language, string quality, Hoster hoster, bool searchOldSeasons)
+    {
+        _loading = true;
+
+        var earliestSeason = searchOldSeasons ? 1 : _seasons.First(s => s.AvailableInPlex).SeasonNumber;
+
+        // Reset episodes
+        foreach (var season in _seasons)
+        {
+            season.Enabled = season.SeasonNumber >= earliestSeason;
+            season.AvailableInSerienfans = false;
+            season.Link = string.Empty;
+
+            foreach (var episode in season.Episodes)
+            {
+                episode.AvailableInSerienfans = false;
+                episode.Link = string.Empty;
+            }
+        }
+
+        StateHasChanged();
+
+        foreach (var season in _seasons.Where(s => s.Enabled && s.Missing > 0))
+        {
+            var serienfansSeason = await SerienfansService.CheckSeasonAsync(_tvShow, season.Model, language.Key, quality, new[] { hoster });
+
+            if(serienfansSeason is null)
+                continue;
+
+            season.Link = serienfansSeason.Link;
+
+            foreach (var serienfansEpisode in serienfansSeason.Episodes)
+            {
+                var episode = season.Episodes.Single(e => e.EpisodeNumber == serienfansEpisode.Index);
+                episode.AvailableInSerienfans = true;
+                episode.Link = serienfansEpisode.Mirrors.FirstOrDefault()?.Link ?? string.Empty;
+            }
+
+            StateHasChanged();
+        }
+
+        _loading = false;
+
+        StateHasChanged();
+    }
+
+    private string GetCompletenessStatus(ICompletenessInfo info)
+    {
+        if (info.Missing > 0)
+            return "missing";
+
+        if (info.Available > 0)
+            return "available";
+
+        if (info.Existing > 0)
+            return "existing";
+
+        return string.Empty;
+    }
+
+    public class SeasonViewModel : ICompletenessInfo
+    {
+        public SeasonViewModel(Season season)
+        {
+            SeasonNumber = season.SeasonNumber;
+            Episodes = season.Episodes.Select(e => new EpisodeViewModel(e)).ToList();
+            Model = season;
+        }
+
+        public bool Enabled { get; set; }
+
+        public Season Model { get; }
+
+        public int SeasonNumber { get; }
+
+        public IReadOnlyCollection<EpisodeViewModel> Episodes { get; }
+
+        public string Link { get; set; } = string.Empty;
+
+        public bool AvailableInPlex { get; set; }
+
+        public bool AvailableInSerienfans { get; set; }
+
+        public int Existing => Episodes.Sum(x => x.Existing);
+
+        public int Available => Episodes.Sum(x => x.Available);
+
+        public int Missing => Episodes.Sum(x => x.Missing);
+    }
+
+    public class EpisodeViewModel : ICompletenessInfo
+    {
+        public EpisodeViewModel(Episode episode)
+        {
+            EpisodeNumber = episode.EpisodeNumber;
+            SeasonNumber = episode.SeasonNumber;
+            Title = episode.Title;
+        }
+
+        public string Link { get; set; } = string.Empty;
+
+        public int EpisodeNumber { get; }
+
+        public int SeasonNumber { get; }
+
+        public string Title { get; }
+
+        public bool AvailableInPlex { get; set; }
+
+        public bool AvailableInSerienfans { get; set; }
+
+        public int Existing => AvailableInPlex ? 1 : 0;
+
+        public int Available => !AvailableInPlex && AvailableInSerienfans ? 1 : 0;
+
+        public int Missing => !AvailableInPlex && !AvailableInSerienfans ? 1 : 0;
+    }
+
+    public int Existing => _seasons.Where(s => s.Enabled).Sum(s => s.Existing);
+
+    public int Available => _seasons.Where(s => s.Enabled).Sum(s => s.Available);
+
+    public int Missing => _seasons.Where(s => s.Enabled).Sum(s => s.Missing);
+
+}

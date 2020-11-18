@@ -1,0 +1,106 @@
+﻿@page "/"
+@using System.Reactive.Linq
+@using System.Reactive.Subjects
+@using SerienfansPlexSync.Shared.Services
+@using SerienfansPlexSync.Client.Services
+@using SerienfansPlexSync.Shared.Models
+@inject ITvShowService TvShowService
+@inject IPlexService PlexService
+@inject IFilterStateService FilterStateService
+
+
+<MatDialog CanBeClosed="false" @bind-IsOpen="_loading">
+    <MatDialogContent>
+        <h3>loading ...</h3>
+        <MatProgressBar Indeterminate="true"></MatProgressBar>
+    </MatDialogContent>
+</MatDialog>
+
+<MatSelectItem TValue="PlexServer" Items="@FilterStateService.Servers" @bind-Value="Server" Label="Select a plex server" >
+    <ItemTemplate>
+        <span>@context.Name</span>
+    </ItemTemplate>
+</MatSelectItem>
+<MatSelectItem TValue="Language" Items="@FilterStateService.Languages" @bind-Value="Language" Label="Select a language">
+    <ItemTemplate>
+        <span>@context.Name</span>
+    </ItemTemplate>
+</MatSelectItem>
+<MatSelectItem TValue="string" Items="@FilterStateService.Qualities" @bind-Value="Quality" Label="Select a quality" >
+</MatSelectItem>
+<MatSelectItem TValue="Hoster" Items="@FilterStateService.Hoster" @bind-Value="Hoster" Label="Select a hoster">
+    <ItemTemplate>
+        <span>@context.Name</span>
+    </ItemTemplate>
+</MatSelectItem>
+<MatCheckbox @bind-Value="SearchOldSeasons" Label="Search old seasons"></MatCheckbox>
+
+<MatAccordion Multi="true">
+    @foreach (var tvShow in _tvShows)
+    {
+        <TvShowComponent PlexTvShow="@tvShow"/>
+    }
+</MatAccordion>
+
+
+@code
+{
+#nullable enable
+
+    private bool _loading = true;
+    private IReadOnlyCollection<PlexTvShow> _tvShows = Array.Empty<PlexTvShow>();
+
+    public Language Language
+    {
+        get => FilterStateService.SelectedLanguage.Value;
+        set => FilterStateService.SelectedLanguage.OnNext(value);
+    }
+
+    public PlexServer? Server
+    {
+        get => FilterStateService.SelectedServer.Value;
+        set => FilterStateService.SelectedServer.OnNext(value);
+    }
+
+    public string Quality
+    {
+        get => FilterStateService.SelectedQuality.Value;
+        set => FilterStateService.SelectedQuality.OnNext(value);
+    }
+
+    public Hoster? Hoster
+    {
+        get => FilterStateService.SelectedHoster.Value;
+        set => FilterStateService.SelectedHoster.OnNext(value);
+    }
+
+    public bool SearchOldSeasons
+    {
+        get => FilterStateService.SearchOldSeasons.Value;
+        set => FilterStateService.SearchOldSeasons.OnNext(value);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await FilterStateService.InitializeAsync();
+
+        _loading = false;
+
+        FilterStateService.SelectedServer.Select(server => Observable.FromAsync(async () =>
+        {
+            _loading = true;
+
+            if (server == null)
+                return Array.Empty<PlexTvShow>();
+
+            var shows = await PlexService.GetTvShowsAsync(server);
+            return shows;
+        })).Concat()
+            .Subscribe(val =>
+            {
+                _tvShows = val;
+                _loading = false;
+                StateHasChanged();
+            });
+    }
+}

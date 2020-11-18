@@ -1,0 +1,13 @@
+﻿<span>
+    <span class="existing" title="Existing episodes" ><span class="dot"></span>@CompletenessInfo?.Existing</span>
+    <span class="available" title="Available episodes for download"><span class="dot"></span>@CompletenessInfo?.Available</span>
+    <span class="missing" title="Missing episodes"><span class="dot"></span>@CompletenessInfo?.Missing</span>
+</span>
+
+
+@code {
+#nullable enable
+
+    [Parameter]
+    public ICompletenessInfo? CompletenessInfo { get; set; }
+}

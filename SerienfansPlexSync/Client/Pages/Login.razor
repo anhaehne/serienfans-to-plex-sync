@@ -1,0 +1,50 @@
+﻿@page "/login"
+@using Plex.Api
+@using Blazored.LocalStorage
+@using SerienfansPlexSync.Client.Authentication
+@attribute [AllowAnonymous]
+@inject IPlexClient PlexClient 
+@inject NavigationManager NavigationManager
+@inject ILocalStorageService LocalStorageService
+
+<h3>Login</h3>
+<span>You have to log in to your Plex account to search for missing episodes.</span>
+
+<button @onclick="OnLoginButtonClicked">Log in</button>
+
+@code 
+{
+    private const string O_AUTH_PIN_KEY = "Plex:OAuthPinId";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var token = await LocalStorageService.GetItemAsStringAsync(PlexAuthenticationProvider.PLEX_TOKEN);
+
+        // Already logged in
+        if (!string.IsNullOrEmpty(token))
+        {
+            NavigationManager.NavigateTo("/", forceLoad: true);
+            return;
+        }
+
+        var pinId = await LocalStorageService.GetItemAsStringAsync(O_AUTH_PIN_KEY);
+
+        if (string.IsNullOrEmpty(pinId))
+            return;
+
+        await LocalStorageService.RemoveItemAsync(O_AUTH_PIN_KEY);
+
+        var authToken = await PlexClient.GetAuthTokenFromOAuthPin(pinId);
+        await LocalStorageService.SetItemAsync(PlexAuthenticationProvider.PLEX_TOKEN, authToken.AuthToken);
+
+        NavigationManager.NavigateTo("/", forceLoad: true);
+    }
+
+    private async void OnLoginButtonClicked()
+    {
+        var pin = await PlexClient.CreateOAuthPin(NavigationManager.Uri);
+        await LocalStorageService.SetItemAsync(O_AUTH_PIN_KEY, pin.Id);
+        NavigationManager.NavigateTo(pin.Url);
+    }
+
+}
